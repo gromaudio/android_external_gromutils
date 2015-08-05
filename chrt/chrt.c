@@ -26,29 +26,38 @@
 #include <unistd.h>
 #include <getopt.h>
 #include <errno.h>
+#include <stdbool.h>
+#include <string.h>
 
-#include "c.h"
-#include "nls.h"
-#include "closestream.h"
-#include "strutils.h"
 #include "procutils.h"
 
-/* the SCHED_BATCH is supported since Linux 2.6.16
- *  -- temporary workaround for people with old glibc headers
- */
-#if defined (__linux__) && !defined(SCHED_BATCH)
-# define SCHED_BATCH 3
-#endif
+#define UTIL_LINUX_VERSION  "1\n"
+#define USAGE_SEPARATOR     "\n"
+#define _(x)                x
 
-/* the SCHED_IDLE is supported since Linux 2.6.23
- * commit id 0e6aca43e08a62a48d6770e9a159dbec167bf4c6
- * -- temporary workaround for people with old glibc headers
- */
-#if defined (__linux__) && !defined(SCHED_IDLE)
-# define SCHED_IDLE 5
-#endif
 
-static void __attribute__((__noreturn__)) show_usage(int rc)
+static inline void errmsg(char doexit, int excode, char adderr, const char *fmt, ...)
+{
+  fprintf(stderr, "chrt: ");
+  if (fmt != NULL) {
+    va_list argp;
+    va_start(argp, fmt);
+    vfprintf(stderr, fmt, argp);
+    va_end(argp);
+    if (adderr)
+      fprintf(stderr, ": ");
+  }
+  if (adderr)
+    fprintf(stderr, "%m");
+  fprintf(stderr, "\n");
+  if (doexit)
+    exit(excode);
+}
+#define err(E, FMT...)  errmsg(1, E, 1, FMT)
+#define warnx(FMT...)   errmsg(0, 0, 0, FMT)
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
+static void show_usage(int rc)
 {
   FILE *out = rc == EXIT_SUCCESS ? stdout : stderr;
 
@@ -63,9 +72,7 @@ static void __attribute__((__noreturn__)) show_usage(int rc)
 
   fputs(USAGE_SEPARATOR, out);
   fputs(_("Policy options:\n"), out);
-  fputs(_(" -b, --batch          set policy to SCHED_BATCH\n"), out);
   fputs(_(" -f, --fifo           set policy to SCHED_FIFO\n"), out);
-  fputs(_(" -i, --idle           set policy to SCHED_IDLE\n"), out);
   fputs(_(" -o, --other          set policy to SCHED_OTHER\n"), out);
   fputs(_(" -r, --rr             set policy to SCHED_RR (default)\n"), out);
 
@@ -77,10 +84,7 @@ static void __attribute__((__noreturn__)) show_usage(int rc)
   fputs(_(" -v, --verbose        display status information\n"), out);
 
   fputs(USAGE_SEPARATOR, out);
-  fputs(USAGE_HELP, out);
-  fputs(USAGE_VERSION, out);
 
-  fprintf(out, USAGE_MAN_TAIL("chrt(1)"));
   exit(rc);
 }
 
@@ -109,19 +113,9 @@ static void show_rt_info(pid_t pid, int isnew)
   case SCHED_FIFO:
     printf("SCHED_FIFO\n");
     break;
-#ifdef SCHED_IDLE
-  case SCHED_IDLE:
-    printf("SCHED_IDLE\n");
-    break;
-#endif
   case SCHED_RR:
     printf("SCHED_RR\n");
     break;
-#ifdef SCHED_BATCH
-  case SCHED_BATCH:
-    printf("SCHED_BATCH\n");
-    break;
-#endif
   default:
     warnx(_("unknown scheduling policy"));
   }
@@ -144,23 +138,11 @@ static void show_min_max(void)
     SCHED_OTHER,
     SCHED_FIFO,
     SCHED_RR,
-#ifdef SCHED_BATCH
-    SCHED_BATCH,
-#endif
-#ifdef SCHED_IDLE
-    SCHED_IDLE,
-#endif
   };
   const char *names[] = {
     "OTHER",
     "FIFO",
     "RR",
-#ifdef SCHED_BATCH
-    "BATCH",
-#endif
-#ifdef SCHED_IDLE
-    "IDLE",
-#endif
   };
 
   for (i = 0; i < ARRAY_SIZE(policies); i++) {
@@ -184,26 +166,18 @@ int main(int argc, char **argv)
 
   static const struct option longopts[] = {
     { "all-tasks",  0, NULL, 'a' },
-    { "batch",  0, NULL, 'b' },
     { "fifo", 0, NULL, 'f' },
-    { "idle", 0, NULL, 'i' },
     { "pid",  0, NULL, 'p' },
     { "help", 0, NULL, 'h' },
     { "max",        0, NULL, 'm' },
     { "other",  0, NULL, 'o' },
     { "rr",   0, NULL, 'r' },
-    { "reset-on-fork", 0, NULL, 'R' },
     { "verbose",  0, NULL, 'v' },
     { "version",  0, NULL, 'V' },
     { NULL,   0, NULL, 0 }
   };
 
-  setlocale(LC_ALL, "");
-  bindtextdomain(PACKAGE, LOCALEDIR);
-  textdomain(PACKAGE);
-  atexit(close_stdout);
-
-  while((i = getopt_long(argc, argv, "+abfiphmoRrvV", longopts, NULL)) != -1)
+  while((i = getopt_long(argc, argv, "+afphmorvV", longopts, NULL)) != -1)
   {
     int ret = EXIT_FAILURE;
 
@@ -211,20 +185,8 @@ int main(int argc, char **argv)
     case 'a':
       all_tasks = 1;
       break;
-    case 'b':
-#ifdef SCHED_BATCH
-      policy = SCHED_BATCH;
-#endif
-      break;
     case 'f':
       policy = SCHED_FIFO;
-      break;
-    case 'R':
-      break;
-    case 'i':
-#ifdef SCHED_IDLE
-      policy = SCHED_IDLE;
-#endif
       break;
     case 'm':
       show_min_max();
@@ -234,7 +196,7 @@ int main(int argc, char **argv)
       break;
     case 'p':
       errno = 0;
-      pid = strtos32_or_err(argv[argc - 1], _("invalid PID argument"));
+      pid = atoi(argv[argc - 1]);
       break;
     case 'r':
       policy = SCHED_RR;
@@ -265,17 +227,17 @@ int main(int argc, char **argv)
       if (!ts)
         err(EXIT_FAILURE, _("cannot obtain the list of tasks"));
       while (!proc_next_tid(ts, &tid))
-        show_rt_info(tid, FALSE);
+        show_rt_info(tid, false);
       proc_close_tasks(ts);
     } else
-      show_rt_info(pid, FALSE);
+      show_rt_info(pid, true);
 
     if (argc - optind == 1)
       return EXIT_SUCCESS;
   }
 
   errno = 0;
-  priority = strtos32_or_err(argv[optind], _("invalid priority argument"));
+  priority = atoi(argv[optind]);
 
   policy |= policy_flag;
 
@@ -297,7 +259,7 @@ int main(int argc, char **argv)
     err(EXIT_FAILURE, _("failed to set pid %d's policy"), pid);
 
   if (verbose)
-    show_rt_info(pid, TRUE);
+    show_rt_info(pid, true);
 
   if (!pid) {
     argv += optind + 1;
