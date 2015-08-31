@@ -49,10 +49,11 @@ using namespace android;
 
 //--------------------------------------------------------------------------
 #define CLEAR(x) memset (&(x), 0, sizeof (x))
-#define MAX_CAMERA_BUFFERS  4
+#define MAX_CAMERA_BUFFERS  2
 
 //--------------------------------------------------------------------------
 int                       fd = -1;
+int                       memType;
 bool                      saveRawdata;
 bool                      displayData;
 const char*               cam_name = NULL;
@@ -61,6 +62,7 @@ unsigned int              sec_capture  = 2;
 unsigned int              capture_mode = 0;
 struct v4l2_format        fmt;
 struct g2d_buf*           aBuffers[ MAX_CAMERA_BUFFERS ];
+struct g2d_buf*           gTmpG2dBuff;
 sp<SurfaceComposerClient> gComposerClient;
 sp<SurfaceControl>        gControl;
 sp<Surface>               gSurface;
@@ -142,64 +144,139 @@ uint32_t get_phy_address(void *addr)
 }
 
 //--------------------------------------------------------------------------
-static void process_image( int idx, unsigned long addr )
+static void process_image( int idx, uint8_t* addr, size_t size )
 {
   status_t             res;
   ANativeWindow_Buffer buffer;
   void                *g2dHandle;
   struct g2d_surface   src,
                        dst;
+  static int           frame_number;
 
-  if( g2d_open( &g2dHandle ) == -1 || g2dHandle == NULL )
+  if( g2d_open( &g2dHandle ) == -1 )
   {
     fprintf( stderr, "Fail to open g2d device!\n" );
     return;
   }
 
-  if( displayData )
+  if( gTmpG2dBuff == NULL )
   {
-    int offset = 100 * fmt.fmt.pix.height + 400;
-
-    fprintf( stderr, "D: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 0],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 1],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 2],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 3],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 4],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 5],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 6],
-    ((char*)aBuffers[idx]->buf_vaddr)[offset + 7] );
+    size_t size = 2 * fmt.fmt.pix.width * fmt.fmt.pix.height;
+    gTmpG2dBuff = g2d_alloc( size, 0 );
+    if( gTmpG2dBuff == NULL )
+    {
+      fprintf( stderr, "Fail to alloc g2d buffer!\n" );
+      return;
+    }
+    memset( gTmpG2dBuff->buf_vaddr, 0xFF, size );
+    fprintf( stderr, "G2D buff: p= 0x%08X 0x%08X, v= 0x%08X, s=%d\n", gTmpG2dBuff->buf_paddr,
+                                                                get_phy_address(gTmpG2dBuff->buf_vaddr),
+                                                                gTmpG2dBuff->buf_vaddr,
+                                                                size );
   }
 
-  if(saveRawdata)
-    save_image( (uint8_t*)aBuffers[idx]->buf_vaddr, aBuffers[idx]->buf_size );
+  if( displayData )
+  {
+    int offset = 100 * fmt.fmt.pix.height;
+
+    fprintf( stderr, "D: %02X %02X %02X %02X %02X %02X %02X %02X\n",
+    addr[ offset + 0 ],
+    addr[ offset + 1 ],
+    addr[ offset + 2 ],
+    addr[ offset + 3 ],
+    addr[ offset + 4 ],
+    addr[ offset + 5 ],
+    addr[ offset + 6 ],
+    addr[ offset + 7 ] );
+  }
+
+  if( saveRawdata )
+    save_image( addr, size );
 
   gSurface->lock( &buffer, NULL );
 
-  src.format    = G2D_YUYV;
-  src.planes[0] = aBuffers[idx]->buf_paddr;
-  src.left      = 0;
-  src.top       = 0;
-  src.right     = fmt.fmt.pix.width;
-  src.bottom    = fmt.fmt.pix.height;
-  src.stride    = fmt.fmt.pix.width;
-  src.width     = fmt.fmt.pix.width;
-  src.height    = fmt.fmt.pix.height;
-  src.rot       = G2D_ROTATION_0;
+  if( capture_mode > 0 )
+  {
+    size_t Ysize = buffer.height * buffer.stride;
+    size_t Csize = Ysize / 4;
 
-  dst.planes[0] = get_phy_address(buffer.bits);
-  dst.left      = 0;
-  dst.top       = 0;
-  dst.right     = buffer.width;
-  dst.bottom    = buffer.height;
-  dst.stride    = buffer.stride;
-  dst.width     = buffer.width;
-  dst.height    = buffer.height;
-  dst.rot       = G2D_ROTATION_0;
-  dst.format    = G2D_RGB565;
+    for( size_t y = 0; y < buffer.height; ++y )
+    {
+      for( size_t x = 0; x < buffer.width; ++x )
+      {
+        size_t pixel_offset = 4 * ( y * buffer.width + x );
+        size_t Ypos = pixel_offset + 3;
 
-  g2d_blit( g2dHandle, &src, &dst );
-  g2d_finish( g2dHandle );
+        ((uint8_t*)buffer.bits)[ y * buffer.stride + x ] = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ Ypos ];
+
+        if( !( y % 2 ) && !( x % 2 ) )
+        {
+          size_t Vpos = pixel_offset + 1;
+          size_t Upos = pixel_offset + 5;
+          size_t offset = ( x / 2 ) + ( y * buffer.stride / 4 );
+
+          ((uint8_t*)buffer.bits + Ysize)[ offset ]         = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ Upos ];
+          ((uint8_t*)buffer.bits + Ysize + Csize)[ offset ] = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ Vpos ];
+        }
+      }
+    }
+//    memset( buffer.bits + Ysize, 128, 2 * Csize );
+
+
+//fprintf(stderr, ":  %dx%d %d\n", buffer.width, buffer.height, buffer.stride);
+
+//    for( size_t i = 0; i < ( Ysize / 2 ); ++i )
+//    {
+//      size_t offset = i * 8; // each iteration covers 8 bytes = 2 pixels.
+//
+//      ((uint8_t*)buffer.bits)[ i * 2 ]    = 0xFF;//((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ];
+//      ((uint8_t*)buffer.bits)[ i * 2 + 1] = 0x00;//((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 7 ];
+//      ((uint8_t*)buffer.bits + Ysize)[ i ] = 128;
+
+//    ((uint8_t*)buffer.bits + Ysize)[ i/2 ]         = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 1 ];
+//    ((uint8_t*)buffer.bits + Ysize + Csize)[ i/2 ] = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ];
+
+ //   fprintf( stderr, "- %d %d, %d, %d\n", ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ],
+ //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 7 ],
+ //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 5 ],
+ //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 1 ] );
+
+
+//  memcpy( buffer.bits, frame->data[0], Ysize );
+//  memcpy( (uint8_t*)buffer.bits + Ysize, frame->data[2], Csize );
+//  memcpy( (uint8_t*)buffer.bits + Ysize + Csize, frame->data[1], Csize );
+
+  }
+  else
+  {
+    src.planes[0] = aBuffers[idx]->buf_paddr;
+    src.left      = 0;
+    src.top       = 0;
+    src.right     = fmt.fmt.pix.width;
+    src.bottom    = fmt.fmt.pix.height;
+    src.stride    = fmt.fmt.pix.width;
+    src.width     = fmt.fmt.pix.width;
+    src.height    = fmt.fmt.pix.height;
+    src.rot       = G2D_ROTATION_0;
+    src.format    = G2D_UYVY;
+
+    dst.planes[0] = gTmpG2dBuff->buf_paddr;
+    dst.left      = 0;
+    dst.top       = 0;
+    dst.right     = buffer.width;
+    dst.bottom    = buffer.height;
+    dst.stride    = buffer.stride;
+    dst.width     = buffer.width;
+    dst.height    = buffer.height;
+    dst.rot       = G2D_ROTATION_0;
+    dst.format    = G2D_RGB565;
+
+    g2d_blit( g2dHandle, &src, &dst );
+    g2d_finish( g2dHandle );
+    g2d_close( g2dHandle );
+
+    memcpy( buffer.bits, gTmpG2dBuff->buf_vaddr, gTmpG2dBuff->buf_size );
+  }
 
   gSurface->unlockAndPost();
 
@@ -207,6 +284,7 @@ static void process_image( int idx, unsigned long addr )
 }
 
 //--------------------------------------------------------------------------
+/*
 static int read_frame( void )
 {
   struct v4l2_buffer buf;
@@ -214,7 +292,7 @@ static int read_frame( void )
 
   CLEAR( buf );
   buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  buf.memory = V4L2_MEMORY_USERPTR;
+  buf.memory = memType;
 
   if( -1 == xioctl( fd, VIDIOC_DQBUF, &buf ) )
   {
@@ -229,13 +307,67 @@ static int read_frame( void )
       break;
 
   assert(i < n_buffers);
-  process_image( i, buf.m.userptr );
+  if( i == 1 )
+  {
+    process_image( i, (uint8_t*)aBuffers[i]->buf_vaddr, aBuffers[i]->buf_size );
 
-  if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
-    errno_exit( "VIDIOC_QBUF" );
+    if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
+      errno_exit( "VIDIOC_QBUF" );
+  }
+  return 1;
+}
+*/
+
+static int read_frame( void )
+{
+  struct v4l2_buffer buf;
+  size_t i, count;
+  size_t ready_indexes[ MAX_CAMERA_BUFFERS ];
+
+  CLEAR( buf );
+  buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  buf.memory = memType;
+
+  for( count = 0; count < MAX_CAMERA_BUFFERS; ++count )
+  {
+
+    if( -1 == xioctl( fd, VIDIOC_DQBUF, &buf ) )
+      errno_exit( "VIDIOC_DQBUF" );
+
+    for( i = 0; i < n_buffers; ++i )
+      if( buf.m.offset == (unsigned int)aBuffers[i]->buf_paddr )
+        break;
+
+    assert(i < n_buffers);
+
+    ready_indexes[ count ] = i;
+  }
+
+
+//  for( i = 0; i < MAX_CAMERA_BUFFERS; ++i )
+  {
+    int idx = ready_indexes[ 0 ];
+    process_image( idx, (uint8_t*)aBuffers[ idx ]->buf_vaddr, aBuffers[ idx ]->buf_size );
+  }
+
+
+  for( i = 0; i < MAX_CAMERA_BUFFERS; ++i )
+  {
+    int idx = ready_indexes[ i ];
+
+    CLEAR( buf );
+    buf.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory    = memType;
+    buf.index     = idx;
+    buf.m.offset  = aBuffers[idx]->buf_paddr;
+
+    if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
+      errno_exit( "VIDIOC_QBUF" );
+  }
 
   return 1;
 }
+
 
 //--------------------------------------------------------------------------
 static void run( void )
@@ -247,12 +379,12 @@ static void run( void )
 
   gettimeofday( &tv1, NULL );
 
-  frames = 30 * sec_capture;
+  frames = 60 * sec_capture;
   while( frames-- > 0 )
   {
     for(;;)
     {
-      usleep(5000);
+//      usleep(5000);
       if( read_frame() )
         break;
     }
@@ -283,7 +415,7 @@ static void start_capturing( void )
 
     CLEAR( buf );
     buf.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory    = V4L2_MEMORY_USERPTR;
+    buf.memory    = memType;
     buf.index     = i;
     buf.m.offset  = aBuffers[i]->buf_paddr;
 
@@ -305,12 +437,20 @@ static void uninit_device( void )
 {
   for( size_t i = 0; i < n_buffers; ++i )
   {
-    g2d_free( aBuffers[ i ] );
+    if( memType == V4L2_MEMORY_USERPTR )
+    {
+      g2d_free( aBuffers[ i ] );
+    }
+    else
+    {
+      munmap( aBuffers[ n_buffers ]->buf_vaddr, aBuffers[ n_buffers ]->buf_size );
+      free( aBuffers[ n_buffers ] );
+    }
   }
 }
 
 //--------------------------------------------------------------------------
-static void init_mmap( unsigned int buffersize )
+static void init_buffers_g2d( unsigned int buffersize )
 {
   struct v4l2_requestbuffers req;
 
@@ -342,7 +482,7 @@ static void init_mmap( unsigned int buffersize )
 
     aBuffers[ n_buffers ] = g2d_alloc( buffersize, 0 );
 
-    fprintf( stderr, "Alloc buff %d, paddr 0x%08X, size %d\n",
+    fprintf( stderr, "Alloc g2d buff %d, paddr 0x%08X, size %d\n",
              n_buffers,
              (unsigned int)aBuffers[ n_buffers ]->buf_paddr,
              (unsigned int)aBuffers[ n_buffers ]->buf_size );
@@ -358,6 +498,66 @@ static void init_mmap( unsigned int buffersize )
 
     if( -1 == ioctl(fd, VIDIOC_QUERYBUF, &buf ) )
       fprintf( stderr, "Fail to register image buffer!\n" );
+  }
+}
+
+//--------------------------------------------------------------------------
+static void init_buffers_mmap( unsigned int buffersize )
+{
+  struct v4l2_requestbuffers req;
+
+  CLEAR( req );
+  req.count   = MAX_CAMERA_BUFFERS;
+  req.type    = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+  req.memory  = V4L2_MEMORY_MMAP;
+
+  if( -1 == xioctl( fd, VIDIOC_REQBUFS, &req ) )
+  {
+    if( EINVAL == errno )
+    {
+      fprintf( stderr, "%s does not support memory mapping\n", cam_name );
+      exit( EXIT_FAILURE );
+    }else{
+      errno_exit( "VIDIOC_REQBUFS" );
+    }
+  }
+
+  if( req.count < MAX_CAMERA_BUFFERS )
+  {
+    fprintf( stderr, "Insufficient buffer memory on %s\n", cam_name );
+    exit( EXIT_FAILURE );
+  }
+
+  for( n_buffers = 0; n_buffers < req.count; ++n_buffers )
+  {
+    struct v4l2_buffer buf;
+
+    CLEAR(buf);
+    buf.type        = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    buf.memory      = V4L2_MEMORY_MMAP;
+    buf.index       = n_buffers;
+
+    if( -1 == ioctl( fd, VIDIOC_QUERYBUF, &buf ) )
+      fprintf( stderr, "Fail to query image buffer!\n" );
+
+    aBuffers[ n_buffers ] = (struct g2d_buf*)malloc( sizeof( struct g2d_buf ) );
+    aBuffers[ n_buffers ]->buf_size   = buf.length;
+    aBuffers[ n_buffers ]->buf_paddr  = buf.m.offset;
+    aBuffers[ n_buffers ]->buf_vaddr  = mmap( NULL,
+                                              buf.length,
+                                              PROT_READ | PROT_WRITE,
+                                              MAP_SHARED,
+                                              fd,
+                                              buf.m.offset );
+
+    if( MAP_FAILED == aBuffers[ n_buffers ]->buf_vaddr )
+      errno_exit( "mmap" );
+
+    fprintf( stderr, "Mmap buff %d, paddr 0x%08X, vaddr 0x%08X, size %d\n",
+             n_buffers,
+             (unsigned int)aBuffers[ n_buffers ]->buf_paddr,
+             (unsigned int)aBuffers[ n_buffers ]->buf_vaddr,
+             (unsigned int)aBuffers[ n_buffers ]->buf_size );
   }
 }
 
@@ -400,10 +600,13 @@ static void init_device( void )
   struct v4l2_frmsizeenum     frmsize;
   struct v4l2_frmivalenum     frmival;
   struct v4l2_dbg_chip_ident  vid_chip;
+  int                         fmt_index;
 
   if( ioctl( fd, VIDIOC_DBG_G_CHIP_IDENT, &vid_chip ) >= 0 )
     fprintf( stderr, "Sensor chip name: %s\n", vid_chip.match.name );
 
+  CLEAR( fmt );
+  fmt_index      = 0;
   fmt_desc.index = 0;
   fmt_desc.type  = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   while( ioctl( fd, VIDIOC_ENUM_FMT, &fmt_desc ) == 0 )
@@ -416,8 +619,14 @@ static void init_device( void )
       fprintf( stderr, "\t%dx%d\n",
                frmsize.discrete.width,
                frmsize.discrete.height );
-
+      if( fmt_index == capture_mode )
+      {
+        fmt.fmt.pix.pixelformat = fmt_desc.pixelformat;
+        fmt.fmt.pix.width       = frmsize.discrete.width;
+        fmt.fmt.pix.height      = frmsize.discrete.height;
+      }
       frmsize.index++;
+      fmt_index++;
     }
     fmt_desc.index++;
   }
@@ -436,9 +645,8 @@ static void init_device( void )
   if( -1 == xioctl( fd, VIDIOC_S_PARM, &param ) )
     errno_exit( "VIDIOC_S_PARAM" );
 
-  CLEAR( fmt );
+
   fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
   fmt.fmt.pix.field       = V4L2_FIELD_NONE;
 
   if( -1 == xioctl( fd, VIDIOC_S_FMT, &fmt ) )
@@ -454,11 +662,14 @@ static void init_device( void )
            fmt.fmt.pix.field,
            fmt.fmt.pix.sizeimage );
 
-  native_window_set_buffers_format( gNativeWindow, HAL_PIXEL_FORMAT_RGB_565 );
+  native_window_set_buffers_format( gNativeWindow, capture_mode ? HAL_PIXEL_FORMAT_YV12 : HAL_PIXEL_FORMAT_RGB_565 );
   native_window_set_buffers_dimensions( gNativeWindow, fmt.fmt.pix.width, fmt.fmt.pix.height );
   native_window_set_scaling_mode( gNativeWindow, NATIVE_WINDOW_SCALING_MODE_SCALE_TO_WINDOW );
 
-  init_mmap( fmt.fmt.pix.sizeimage );
+  if( memType == V4L2_MEMORY_USERPTR )
+    init_buffers_g2d( fmt.fmt.pix.sizeimage );
+  else
+    init_buffers_mmap( fmt.fmt.pix.sizeimage );
 }
 
 //--------------------------------------------------------------------------
@@ -573,6 +784,7 @@ int main( int argc, char ** argv )
   cam_name = "/dev/video0";
   saveRawdata = false;
   displayData = false;
+  memType     = V4L2_MEMORY_MMAP;
 
   for(;;)
   {
@@ -623,6 +835,7 @@ int main( int argc, char ** argv )
   initOutputSurface();
   open_device();
   init_device();
+  sleep(1);
   start_capturing();
   run();
   stop_capturing();
