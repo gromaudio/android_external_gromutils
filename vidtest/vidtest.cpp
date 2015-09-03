@@ -49,7 +49,7 @@ using namespace android;
 
 //--------------------------------------------------------------------------
 #define CLEAR(x) memset (&(x), 0, sizeof (x))
-#define MAX_CAMERA_BUFFERS  2
+#define MAX_CAMERA_BUFFERS  1
 
 //--------------------------------------------------------------------------
 int                       fd = -1;
@@ -200,9 +200,9 @@ static void process_image( int idx, uint8_t* addr, size_t size )
     size_t Ysize = buffer.height * buffer.stride;
     size_t Csize = Ysize / 4;
 
-    for( size_t y = 0; y < buffer.height; ++y )
+    for( int y = 0; y < buffer.height; ++y )
     {
-      for( size_t x = 0; x < buffer.width; ++x )
+      for( int x = 0; x < buffer.width; ++x )
       {
         size_t pixel_offset = 4 * ( y * buffer.width + x );
         size_t Ypos = pixel_offset + 3;
@@ -220,32 +220,6 @@ static void process_image( int idx, uint8_t* addr, size_t size )
         }
       }
     }
-//    memset( buffer.bits + Ysize, 128, 2 * Csize );
-
-
-//fprintf(stderr, ":  %dx%d %d\n", buffer.width, buffer.height, buffer.stride);
-
-//    for( size_t i = 0; i < ( Ysize / 2 ); ++i )
-//    {
-//      size_t offset = i * 8; // each iteration covers 8 bytes = 2 pixels.
-//
-//      ((uint8_t*)buffer.bits)[ i * 2 ]    = 0xFF;//((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ];
-//      ((uint8_t*)buffer.bits)[ i * 2 + 1] = 0x00;//((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 7 ];
-//      ((uint8_t*)buffer.bits + Ysize)[ i ] = 128;
-
-//    ((uint8_t*)buffer.bits + Ysize)[ i/2 ]         = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 1 ];
-//    ((uint8_t*)buffer.bits + Ysize + Csize)[ i/2 ] = ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ];
-
- //   fprintf( stderr, "- %d %d, %d, %d\n", ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 3 ],
- //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 7 ],
- //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 5 ],
- //                                       ((uint8_t*)aBuffers[idx]->buf_vaddr)[ offset + 1 ] );
-
-
-//  memcpy( buffer.bits, frame->data[0], Ysize );
-//  memcpy( (uint8_t*)buffer.bits + Ysize, frame->data[2], Csize );
-//  memcpy( (uint8_t*)buffer.bits + Ysize + Csize, frame->data[1], Csize );
-
   }
   else
   {
@@ -284,7 +258,6 @@ static void process_image( int idx, uint8_t* addr, size_t size )
 }
 
 //--------------------------------------------------------------------------
-/*
 static int read_frame( void )
 {
   struct v4l2_buffer buf;
@@ -297,7 +270,10 @@ static int read_frame( void )
   if( -1 == xioctl( fd, VIDIOC_DQBUF, &buf ) )
   {
     if( errno == EAGAIN )
+    {
+      fprintf( stderr, "!\n" );
       return 0;
+    }
     else
       errno_exit( "VIDIOC_DQBUF" );
   }
@@ -307,90 +283,40 @@ static int read_frame( void )
       break;
 
   assert(i < n_buffers);
-  if( i == 1 )
-  {
-    process_image( i, (uint8_t*)aBuffers[i]->buf_vaddr, aBuffers[i]->buf_size );
+  process_image( i, (uint8_t*)aBuffers[i]->buf_vaddr, aBuffers[i]->buf_size );
 
-    if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
-      errno_exit( "VIDIOC_QBUF" );
-  }
-  return 1;
-}
-*/
-
-static int read_frame( void )
-{
-  struct v4l2_buffer buf;
-  size_t i, count;
-  size_t ready_indexes[ MAX_CAMERA_BUFFERS ];
-
-  CLEAR( buf );
-  buf.type   = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-  buf.memory = memType;
-
-  for( count = 0; count < MAX_CAMERA_BUFFERS; ++count )
-  {
-
-    if( -1 == xioctl( fd, VIDIOC_DQBUF, &buf ) )
-      errno_exit( "VIDIOC_DQBUF" );
-
-    for( i = 0; i < n_buffers; ++i )
-      if( buf.m.offset == (unsigned int)aBuffers[i]->buf_paddr )
-        break;
-
-    assert(i < n_buffers);
-
-    ready_indexes[ count ] = i;
-  }
-
-
-//  for( i = 0; i < MAX_CAMERA_BUFFERS; ++i )
-  {
-    int idx = ready_indexes[ 0 ];
-    process_image( idx, (uint8_t*)aBuffers[ idx ]->buf_vaddr, aBuffers[ idx ]->buf_size );
-  }
-
-
-  for( i = 0; i < MAX_CAMERA_BUFFERS; ++i )
-  {
-    int idx = ready_indexes[ i ];
-
-    CLEAR( buf );
-    buf.type      = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    buf.memory    = memType;
-    buf.index     = idx;
-    buf.m.offset  = aBuffers[idx]->buf_paddr;
-
-    if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
-      errno_exit( "VIDIOC_QBUF" );
-  }
+  if( -1 == xioctl( fd, VIDIOC_QBUF, &buf ) )
+    errno_exit( "VIDIOC_QBUF" );
 
   return 1;
 }
-
 
 //--------------------------------------------------------------------------
 static void run( void )
 {
-  unsigned int    count,
-                  frames;
+  int             frames;
   struct timeval  tv1,
                   tv2;
+  float           time_elapsed;
 
   gettimeofday( &tv1, NULL );
+  gettimeofday( &tv2, NULL );
 
-  frames = 60 * sec_capture;
-  while( frames-- > 0 )
+  frames       = 0;
+  time_elapsed = 0;
+  while( time_elapsed < sec_capture )
   {
-    for(;;)
+    if( read_frame() )
     {
 //      usleep(5000);
-      if( read_frame() )
-        break;
+      frames++;
     }
+
+    gettimeofday( &tv2, NULL );
+    time_elapsed = tv2.tv_sec - tv1.tv_sec + ((float)(tv2.tv_usec-tv1.tv_usec))/1000000;
   }
-  gettimeofday( &tv2, NULL );
-  fprintf( stderr, "\nCapturing time %3.1fs.\n",( tv2.tv_sec - tv1.tv_sec + ((float)(tv2.tv_usec-tv1.tv_usec))/1000000) );
+
+  fprintf( stderr, "\nCapturing %d frames in %3.1fs = %3.1ffps\n", frames, time_elapsed, frames / time_elapsed );
 }
 
 //--------------------------------------------------------------------------
@@ -635,7 +561,7 @@ static void init_device( void )
   input = 1;
   fprintf( stderr, "Select V4L2 input %d\n", input );
   if( ioctl( fd, VIDIOC_S_INPUT, &input ) < 0 )
-    errno_exit("VIDIOC_S_INPUT");
+    fprintf( stderr, "VIDIOC_S_INPUT not supported\n");
 
   CLEAR( param );
   param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
