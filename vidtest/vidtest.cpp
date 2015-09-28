@@ -171,7 +171,7 @@ static void process_image( int idx, uint8_t* addr, size_t size )
     memset( gTmpG2dBuff->buf_vaddr, 0xFF, size );
     fprintf( stderr, "G2D buff: p= 0x%08X 0x%08X, v= 0x%08X, s=%d\n", gTmpG2dBuff->buf_paddr,
                                                                 get_phy_address(gTmpG2dBuff->buf_vaddr),
-                                                                gTmpG2dBuff->buf_vaddr,
+                                                                (uint32_t)gTmpG2dBuff->buf_vaddr,
                                                                 size );
   }
 
@@ -522,6 +522,7 @@ static void init_device( void )
 
   // Scan for supported formats.
   {
+  struct v4l2_input           input;
   struct v4l2_fmtdesc         fmt_desc;
   struct v4l2_frmsizeenum     frmsize;
   struct v4l2_frmivalenum     frmival;
@@ -530,6 +531,14 @@ static void init_device( void )
 
   if( ioctl( fd, VIDIOC_DBG_G_CHIP_IDENT, &vid_chip ) >= 0 )
     fprintf( stderr, "Sensor chip name: %s\n", vid_chip.match.name );
+
+  CLEAR( input );
+  input.index = 0;
+  while( ioctl( fd, VIDIOC_ENUMINPUT, &input ) == 0 )
+  {
+    fprintf( stderr, "Input %d: name=%s audio_samplerate=%d\n", input.index, input.name, input.audioset );
+    input.index++;
+  }
 
   CLEAR( fmt );
   fmt_index      = 0;
