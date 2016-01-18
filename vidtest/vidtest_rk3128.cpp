@@ -22,6 +22,8 @@
 #include <sys/ioctl.h>
 #include <asm/types.h>
 #include <linux/videodev2.h>
+#include <binder/IPCThreadState.h>
+#include <binder/ProcessState.h>
 #include <media/stagefright/NativeWindowWrapper.h>
 #include <gui/ISurfaceComposer.h>
 #include <gui/SurfaceComposerClient.h>
@@ -46,6 +48,7 @@ struct cam_buf {
 //--------------------------------------------------------------------------
 int                       fd = -1;
 int                       memType;
+int                       frames;
 bool                      saveRawdata;
 bool                      displayData;
 const char*               cam_name = NULL;
@@ -176,6 +179,8 @@ static void process_image( int idx, uint8_t* buff, size_t size )
 
   gSurface->unlockAndPost();
 }
+
+}
 //--------------------------------------------------------------------------
 static int read_frame( void )
 {
@@ -212,7 +217,6 @@ static int read_frame( void )
 //--------------------------------------------------------------------------
 static void run( void )
 {
-  int             frames;
   struct timeval  tv1,
                   tv2;
   float           time_elapsed;
@@ -495,6 +499,10 @@ static void open_device( void )
 // --------------------------------------------------------------------------------
 static void initOutputSurface( void )
 {
+  // set up the thread-pool
+  sp<ProcessState> proc(ProcessState::self());
+  ProcessState::self()->startThreadPool();
+
   gComposerClient = new SurfaceComposerClient;
   if( OK == gComposerClient->initCheck() )
   {
@@ -629,7 +637,7 @@ int main( int argc, char ** argv )
   open_device();
   init_device();
   sleep(1);
-  n_buffers = 1;
+//  n_buffers = 1;
   start_capturing();
   run();
   stop_capturing();
