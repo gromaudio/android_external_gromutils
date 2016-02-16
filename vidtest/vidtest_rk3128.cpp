@@ -180,7 +180,6 @@ static void process_image( int idx, uint8_t* buff, size_t size )
   gSurface->unlockAndPost();
 }
 
-}
 //--------------------------------------------------------------------------
 static int read_frame( void )
 {
@@ -341,12 +340,12 @@ static void init_buffers_mmap( unsigned int buffersize )
     if( MAP_FAILED == aBuffers[ n_buffers ]->buf_vaddr )
       errno_exit( "mmap" );
 
-    fprintf( stderr, "Mmap buff %d, paddr 0x08%x 0x08%x, vaddr 0x08%x, size %d\n",
+    fprintf( stderr, "Mmap buff %d, paddr %p %p, vaddr %p, size %d\n",
              n_buffers,
-             (unsigned int)aBuffers[ n_buffers ]->buf_paddr,
-             get_phy_address(aBuffers[ n_buffers ]->buf_vaddr),
-             (unsigned int)aBuffers[ n_buffers ]->buf_vaddr,
-             (unsigned int)aBuffers[ n_buffers ]->buf_size );
+             (void*)aBuffers[ n_buffers ]->buf_paddr,
+             (void*)get_phy_address(aBuffers[ n_buffers ]->buf_vaddr),
+             (void*)aBuffers[ n_buffers ]->buf_vaddr,
+             aBuffers[ n_buffers ]->buf_size );
   }
 }
 
