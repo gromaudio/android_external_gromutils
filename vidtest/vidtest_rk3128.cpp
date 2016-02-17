@@ -426,11 +426,6 @@ static void init_device( void )
   }
   }
 
-  input = 1;
-  fprintf( stderr, "Select V4L2 input %d\n", input );
-  if( ioctl( fd, VIDIOC_S_INPUT, &input ) < 0 )
-    fprintf( stderr, "VIDIOC_S_INPUT not supported\n");
-
   CLEAR( param );
   param.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   param.parm.capture.timeperframe.numerator   = 1;
@@ -438,7 +433,6 @@ static void init_device( void )
   param.parm.capture.capturemode              = capture_mode;
   if( -1 == xioctl( fd, VIDIOC_S_PARM, &param ) )
     errno_exit( "VIDIOC_S_PARAM" );
-
 
   fmt.type                = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   fmt.fmt.pix.field       = V4L2_FIELD_NONE;
